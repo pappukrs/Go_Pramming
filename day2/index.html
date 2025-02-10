@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebRTC Video Chat</title>
+  <style>
+    video {
+      width: 300px;
+      height: 225px;
+      margin: 10px;
+      background: #2c3e50;
+      border: 1px solid #3498db;
+    }
+    .error {
+      color: red;
+      margin: 10px 0;
+    }
+    .controls {
+      margin: 15px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>WebRTC Video Chat</h1>
+  <div id="errorMsg" class="error"></div>
+  <div class="controls">
+    <button onclick="requestMediaPermissions()">Enable Camera/Mic</button>
+    <button onclick="startCall()" id="callButton" disabled>Start Call</button>
+  </div>
+  <video id="localVideo" autoplay playsinline></video>
+  <video id="remoteVideo" autoplay playsinline></video>
+
+  <script>
+    let localStream;
+    let peerConnection;
+    const ws = new WebSocket("ws://192.168.1.7:8081/ws");
+    const configuration = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    };
+
+    // Check browser compatibility
+    function checkBrowserSupport() {
+      const supports = {
+        webRTC: 'RTCPeerConnection' in window,
+        getUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+        websocket: 'WebSocket' in window
+      };
+
+      if (!supports.webRTC) {
+        showError('WebRTC is not supported in your browser. Please use a modern browser like Chrome, Firefox, or Edge.');
+        return false;
+      }
+      if (!supports.getUserMedia) {
+        showError('Camera/Microphone access is not supported in your browser. Please use a modern browser.');
+        return false;
+      }
+      if (!supports.websocket) {
+        showError('WebSocket is not supported in your browser. Please use a modern browser.');
+        return false;
+      }
+      return true;
+    }
+
+    function showError(message) {
+      document.getElementById('errorMsg').textContent = message;
+    }
+
+    async function requestMediaPermissions() {
+      try {
+        if (!checkBrowserSupport()) return;
+
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+          video: true, 
+          audio: true 
+        });
+        document.getElementById("localVideo").srcObject = localStream;
+        document.getElementById("callButton").disabled = false;
+        showError(''); // Clear any error messages
+      } catch (error) {
+        console.error('Media access error:', error);
+        let errorMessage = 'Error accessing media devices. ';
+        if (error.name === 'NotAllowedError') {
+          errorMessage += 'Please allow camera and microphone access.';
+        } else if (error.name === 'NotFoundError') {
+          errorMessage += 'No camera or microphone found.';
+        } else {
+          errorMessage += 'Please ensure you have a camera and microphone connected.';
+        }
+        showError(errorMessage);
+      }
+    }
+
+    async function startCall() {
+      try {
+        if (!localStream) {
+          showError('Please enable camera and microphone first');
+          return;
+        }
+
+        peerConnection = new RTCPeerConnection(configuration);
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        peerConnection.ontrack = (event) => {
+          document.getElementById("remoteVideo").srcObject = event.streams[0];
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            ws.send(JSON.stringify({ candidate: event.candidate }));
+          }
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        ws.send(JSON.stringify({ sdp: offer }));
+
+      } catch (error) {
+        console.error('Error starting call:', error);
+        showError('Error establishing connection. Please try again.');
+      }
+    }
+
+    ws.onmessage = async (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.sdp) {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
+          if (message.sdp.type === "offer") {
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            ws.send(JSON.stringify({ sdp: peerConnection.localDescription }));
+          }
+        } else if (message.candidate) {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+      } catch (error) {
+        console.error('WebSocket message error:', error);
+        showError('Connection error. Please refresh and try again.');
+      }
+    };
+
+    // Check browser support on load
+    checkBrowserSupport();
+  </script>
+</body>
+</html>
